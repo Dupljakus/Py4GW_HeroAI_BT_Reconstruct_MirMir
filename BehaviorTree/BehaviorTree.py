@@ -1,13 +1,34 @@
+
+from __future__ import annotations
 # =============================================================
 #   BehaviorTree.py — CLEAN TREE STRUCTURE + TIMING
 #   Safe for BT viewer, no GW logic yet.
 # =============================================================
 
-from __future__ import annotations
+# Removed xxhash import (module not available). Using internal hash64() wrapper instead.
+
 
 import time
+
 from enum import IntEnum
 from typing import List, Optional
+
+# =============================================================
+#   Safe Hash Wrapper (No external dependencies, no Pylance errors)
+# =============================================================
+try:
+    import xxhash  # type: ignore
+    def hash64(data: bytes) -> int:
+        return xxhash.xxh64(data).intdigest()
+except Exception:
+    def hash64(data: bytes) -> int:
+        """Fallback xxHash64-like hash using Python's built-in hash()."""
+        return hash(data) & 0xFFFFFFFFFFFFFFFF
+
+# =============================================================
+#   GLOBAL BT TICK COUNTER
+# =============================================================
+BT_TICK_ID = 0
 
 
 # =============================================================
@@ -36,8 +57,12 @@ class Node:
         self.node_type: str = self.__class__.__name__
         self.is_active_path = False       # bool
         self.exec_index = 0               # int (order of execution this tick)
+        self.last_tick_id = -1
+        self.path_id = 0   # 64-bit xxHash of path string
     @classmethod
     def begin_new_tick(cls):
+        global BT_TICK_ID
+        BT_TICK_ID += 1
         for n in cls._executed_nodes_last_tick:
             n.is_active_path = False
             n.exec_index = 0
@@ -63,6 +88,8 @@ class Node:
         self.last_duration_ms = (end - start_time) * 1000.0
         self.accumulated_ms += self.last_duration_ms
         type(self).register_executed(self)
+        from BehaviorTree.BehaviorTree import BT_TICK_ID
+        self.last_tick_id = BT_TICK_ID
         return state
 
 
@@ -185,7 +212,7 @@ class DummyAction(Action):
 def BuildBehaviorTree() -> Node:
     # ----- HandleLoading -----
     handle_loading = Sequence("HandleLoading", [
-        DummyCondition("IsLoadingScreen", default_result=True),
+        DummyCondition("IsLoadingScreen", default_result=False),
         DummyAction("WaitLoading", default_state=NodeState.RUNNING),
     ])
 
@@ -277,15 +304,23 @@ class BehaviorTree:
         """
         Build a lightweight snapshot of the current tree for the debugger.
         Node IDs are assigned per snapshot and are not stable across ticks.
+        Each node gets a stable path_id (xxHash64) based on its path from ROOT.
         """
         snapshot: dict[int, dict] = {}
 
-        def visit(node: Node, next_id: list[int]) -> int:
+        def visit(node: Node, next_id: list[int], path_parts: list[str]) -> int:
+            # Build this node's path string
+            path_str = "/".join(path_parts + [node.name])
+
+            # NEW (use internal hash64 wrapper)
+            path_id = hash64(path_str.encode("utf-8"))
+            if getattr(node, "path_id", 0) == 0:
+                node.path_id = path_id
+
             nid = next_id[0]
             next_id[0] += 1
 
             children = getattr(node, "children", [])
-            # Safely extract last_state name; avoids optional-member Pylance error
             state_enum = getattr(node, "last_state", None)
             state_str = state_enum.name if (state_enum is not None) else None
 
@@ -296,25 +331,26 @@ class BehaviorTree:
                 "last_duration_ms": getattr(node, "last_duration_ms", 0.0),
                 "accumulated_ms": getattr(node, "accumulated_ms", 0.0),
                 "exec_index": getattr(node, "exec_index", 0),
+                "last_tick_id": getattr(node, "last_tick_id", -1),
                 "is_active_path": getattr(node, "is_active_path", False),
+                "path_id": path_id,
                 "children": [],
             }
 
-            for child in children:
-                # Skip invalid child references
+            # Sort children by exec_index for stable snapshot
+            for child in sorted(children, key=lambda c: getattr(c, "exec_index", 0)):
                 if child is None:
                     continue
                 try:
-                    child_id = visit(child, next_id)
+                    child_id = visit(child, next_id, path_parts + [node.name])
                     snapshot[nid]["children"].append(child_id)
                 except AttributeError:
-                    # Skip nodes that do not have node_id yet
                     continue
 
             return nid
 
         if self.root is not None:
-            visit(self.root, [1])
+            visit(self.root, [1], [])
 
         return snapshot
 
