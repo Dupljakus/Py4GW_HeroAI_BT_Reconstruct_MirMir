@@ -269,18 +269,75 @@ BT_ROOT: Node = BuildBehaviorTree()
 class BehaviorTree:
     def __init__(self) -> None:
         self.root: Node = BT_ROOT
+        self._executed_nodes_last_tick = []
+        # Snapshot used by BT debugger (Step 4)
+        self.last_snapshot: dict[int, dict] = {}
+
+    def _build_snapshot(self) -> dict:
+        """
+        Build a lightweight snapshot of the current tree for the debugger.
+        Node IDs are assigned per snapshot and are not stable across ticks.
+        """
+        snapshot: dict[int, dict] = {}
+
+        def visit(node: Node, next_id: list[int]) -> int:
+            nid = next_id[0]
+            next_id[0] += 1
+
+            children = getattr(node, "children", [])
+            # Safely extract last_state name; avoids optional-member Pylance error
+            state_enum = getattr(node, "last_state", None)
+            state_str = state_enum.name if (state_enum is not None) else None
+
+            snapshot[nid] = {
+                "name": getattr(node, "name", f"Node_{nid}"),
+                "node_type": getattr(node, "node_type", node.__class__.__name__),
+                "state": state_str,
+                "last_duration_ms": getattr(node, "last_duration_ms", 0.0),
+                "accumulated_ms": getattr(node, "accumulated_ms", 0.0),
+                "exec_index": getattr(node, "exec_index", 0),
+                "is_active_path": getattr(node, "is_active_path", False),
+                "children": [],
+            }
+
+            for child in children:
+                # Skip invalid child references
+                if child is None:
+                    continue
+                try:
+                    child_id = visit(child, next_id)
+                    snapshot[nid]["children"].append(child_id)
+                except AttributeError:
+                    # Skip nodes that do not have node_id yet
+                    continue
+
+            return nid
+
+        if self.root is not None:
+            visit(self.root, [1])
+
+        return snapshot
 
     def tick(self) -> NodeState:
         Node.begin_new_tick()  # Start of tick: reset tracking
         if self.root:
             result = self.root.tick()
             self._executed_nodes_last_tick = Node.get_executed_nodes_last_tick()
+            # Build snapshot for debugger
+            self.last_snapshot = self._build_snapshot()
             return result
         self._executed_nodes_last_tick = []
+        self.last_snapshot = {}
         return NodeState.FAILURE
 
     def GetExecutedNodesLastTick(self):
         return self._executed_nodes_last_tick
+
+    def GetSnapshot(self):
+        """
+        Return the most recent snapshot for the debugger.
+        """
+        return self.last_snapshot
 
 
 __all__ = [
