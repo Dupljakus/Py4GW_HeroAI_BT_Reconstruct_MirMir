@@ -173,22 +173,42 @@ def draw_window():
             if not snapshot or "nodes" not in snapshot:
                 PyImGui.text("No snapshot available yet. Tick the tree at least once.")
             else:
+                # Rebuild a tree from snapshot nodes using path_id / parent_path_id
                 nodes = snapshot.get("nodes", [])
-                # Flat list, ordered by exec_index
+                children_map: dict[int, list] = {}
+                roots: list = []
+
                 for snap in nodes:
-                    state_key = snap.state or "None"
-                    node_type = snap.node_type
+                    parent_id = getattr(snap, "parent_path_id", 0)
+                    if parent_id == 0:
+                        roots.append(snap)
+                    children_map.setdefault(parent_id, []).append(snap)
+
+                # Ensure deterministic order by original tree child index,
+                # not by execution order.
+                for key in children_map:
+                    children_map[key].sort(
+                        key=lambda s: (getattr(s, "child_index", 0), s.exec_index)
+                    )
+
+                # Sort roots as well by child_index (normally only one root)
+                roots.sort(key=lambda s: (getattr(s, "child_index", 0), s.exec_index))
+
+                def draw_snapshot_node(snap, indent: int) -> None:
                     name = snap.name
+                    node_type = snap.node_type
+                    state_key = snap.state or "None"
 
                     # Text filter
+                    show_this = True
                     if search_query:
                         q = search_query.lower()
                         if q not in name.lower() and q not in node_type.lower():
-                            continue
+                            show_this = False
 
                     # Node-type filter
                     if node_type_filter != "All" and node_type != node_type_filter:
-                        continue
+                        show_this = False
 
                     # Colors by state and type
                     color_name_state = THEME_NODE_STATE.get(state_key, "gray")
@@ -199,13 +219,36 @@ def draw_window():
 
                     color = state_color if state_key != "None" else type_color
 
-                    # Display line
+                    prefix = "    " * indent
                     text = (
                         f"[{snap.exec_index:03d}] {name} [{node_type}]"
                         f" — {state_key} — {snap.duration_ms:.2f}ms"
                     )
                     text, _ = highlight_text(text, highlight_query)
-                    PyImGui.text_colored(text, color)
+
+                    if show_this:
+                        PyImGui.text_colored(prefix + text, color)
+
+                        if PyImGui.is_item_hovered():
+                            PyImGui.begin_tooltip()
+                            PyImGui.text(f"Name: {name}")
+                            PyImGui.text(f"Type: {node_type}")
+                            PyImGui.text(f"State: {state_key}")
+                            PyImGui.text(f"Exec Index: {snap.exec_index}")
+                            PyImGui.text(f"Child Index: {getattr(snap, 'child_index', 0)}")
+                            PyImGui.text(f"Path ID: {snap.path_id}")
+                            PyImGui.text(f"Parent Path ID: {snap.parent_path_id}")
+                            PyImGui.text(f"Duration: {snap.duration_ms:.2f} ms")
+                            PyImGui.text(f"Tick ID: {snap.tick_id}")
+                            PyImGui.end_tooltip()
+
+                    # Draw children regardless of whether parent was shown
+                    for child_snap in children_map.get(snap.path_id, []):
+                        draw_snapshot_node(child_snap, indent + 1)
+
+                # There should normally be a single root, but we support multiple just in case
+                for root_snap in roots:
+                    draw_snapshot_node(root_snap, indent=0)
 
             PyImGui.tree_pop()
 

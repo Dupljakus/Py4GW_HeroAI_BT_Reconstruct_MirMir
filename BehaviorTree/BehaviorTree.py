@@ -43,6 +43,7 @@ class NodeSnapshot:
         "exec_index",
         "path_id",
         "parent_path_id",
+        "child_index",
         "node_type",
         "name",
         "state",
@@ -56,6 +57,7 @@ class NodeSnapshot:
         exec_index: int,
         path_id: int,
         parent_path_id: int,
+        child_index: int,
         node_type: str,
         name: str,
         state: str,
@@ -66,6 +68,7 @@ class NodeSnapshot:
         self.exec_index = exec_index
         self.path_id = path_id
         self.parent_path_id = parent_path_id
+        self.child_index = child_index
         self.node_type = node_type
         self.name = name
         self.state = state
@@ -98,6 +101,7 @@ class SnapshotBuilder:
             exec_index=node.exec_index,
             path_id=node.path_id,
             parent_path_id=parent_path_id,
+            child_index=getattr(node, "child_index", 0),
             node_type=node.node_type,
             name=node.name,
             state=state_str,
@@ -141,7 +145,9 @@ class Node:
         self.is_active_path = False       # bool
         self.exec_index = 0               # int (order of execution this tick)
         self.last_tick_id = -1
-        self.path_id = 0   # 64-bit xxHash of path string
+        self.path_id = 0   # 64-bit xxHash of path string (assigned during tree init)
+        self.parent: Optional["Node"] = None  # parent pointer, set during tree init
+        self.child_index: int = 0             # index within parent's children list
     @classmethod
     def begin_new_tick(cls):
         global BT_TICK_ID
@@ -369,11 +375,33 @@ def BuildBehaviorTree() -> Node:
     return root
 
 
+def _initialize_tree_metadata(root: Node) -> None:
+    """
+    Assign parent and path_id for all nodes in the static behavior tree.
+    This runs once for BT_ROOT and provides stable identifiers used
+    by Perfect Snapshot Mode.
+    """
+
+    def visit(node: Node, parent: Optional[Node], path_parts: list[str]) -> None:
+        node.parent = parent
+        path_str = "/".join(path_parts + [node.name])
+        node.path_id = hash64(path_str.encode("utf-8"))
+
+        for idx, child in enumerate(getattr(node, "children", [])):
+            if child is not None:
+                child.child_index = idx
+                visit(child, node, path_parts + [node.name])
+
+    if root is not None:
+        visit(root, None, [])
+
+
 # =============================================================
 #   GLOBAL ROOT + Wrapper (used by BTStandalone)
 # =============================================================
 
 BT_ROOT: Node = BuildBehaviorTree()
+_initialize_tree_metadata(BT_ROOT)
 
 
 class BehaviorTree:
