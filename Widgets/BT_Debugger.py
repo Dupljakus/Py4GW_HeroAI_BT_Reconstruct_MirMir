@@ -165,6 +165,50 @@ def draw_window():
             )
             PyImGui.tree_pop()
 
+        # -----------------------------------------------------
+        # Snapshot (Perfect Snapshot Mode)
+        # -----------------------------------------------------
+        snapshot = getattr(test_bt, "last_snapshot", None)
+        if PyImGui.tree_node("Snapshot (last tick)"):
+            if not snapshot or "nodes" not in snapshot:
+                PyImGui.text("No snapshot available yet. Tick the tree at least once.")
+            else:
+                nodes = snapshot.get("nodes", [])
+                # Flat list, ordered by exec_index
+                for snap in nodes:
+                    state_key = snap.state or "None"
+                    node_type = snap.node_type
+                    name = snap.name
+
+                    # Text filter
+                    if search_query:
+                        q = search_query.lower()
+                        if q not in name.lower() and q not in node_type.lower():
+                            continue
+
+                    # Node-type filter
+                    if node_type_filter != "All" and node_type != node_type_filter:
+                        continue
+
+                    # Colors by state and type
+                    color_name_state = THEME_NODE_STATE.get(state_key, "gray")
+                    state_color = ColorPalette.GetColor(color_name_state).to_tuple_normalized()
+
+                    color_name_type = THEME_NODE_TYPE.get(node_type, color_theme)
+                    type_color = ColorPalette.GetColor(color_name_type).to_tuple_normalized()
+
+                    color = state_color if state_key != "None" else type_color
+
+                    # Display line
+                    text = (
+                        f"[{snap.exec_index:03d}] {name} [{node_type}]"
+                        f" — {state_key} — {snap.duration_ms:.2f}ms"
+                    )
+                    text, _ = highlight_text(text, highlight_query)
+                    PyImGui.text_colored(text, color)
+
+            PyImGui.tree_pop()
+
         PyImGui.separator()
 
         # -----------------------------------------------------

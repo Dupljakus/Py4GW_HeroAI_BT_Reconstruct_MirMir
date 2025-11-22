@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 # =============================================================
 #   BehaviorTree.py — CLEAN TREE STRUCTURE + TIMING
@@ -30,6 +29,90 @@ except Exception:
 # =============================================================
 BT_TICK_ID = 0
 
+# =============================================================
+#   Perfect Snapshot Mode — Immutable Per-Tick Snapshots
+# =============================================================
+
+class NodeSnapshot:
+    """
+    Immutable per-tick snapshot for a single executed node.
+    Contains no references to live node objects.
+    """
+    __slots__ = (
+        "tick_id",
+        "exec_index",
+        "path_id",
+        "parent_path_id",
+        "node_type",
+        "name",
+        "state",
+        "duration_ms",
+        "extra",
+    )
+
+    def __init__(
+        self,
+        tick_id: int,
+        exec_index: int,
+        path_id: int,
+        parent_path_id: int,
+        node_type: str,
+        name: str,
+        state: str,
+        duration_ms: float,
+        extra: dict | None = None,
+    ):
+        self.tick_id = tick_id
+        self.exec_index = exec_index
+        self.path_id = path_id
+        self.parent_path_id = parent_path_id
+        self.node_type = node_type
+        self.name = name
+        self.state = state
+        self.duration_ms = duration_ms
+        self.extra = extra or {}
+
+class SnapshotBuilder:
+    """
+    Collects NodeSnapshot entries each tick and produces
+    an immutable structure consumed by the BT debugger.
+    """
+
+    __slots__ = ("tick_id", "_records")
+
+    def __init__(self) -> None:
+        self.tick_id: int = 0
+        self._records: list[NodeSnapshot] = []
+
+    def reset(self, tick_id: int) -> None:
+        self.tick_id = tick_id
+        self._records.clear()
+
+    def record(self, node, state_str: str, duration_ms: float) -> None:
+        parent_path_id = 0
+        if hasattr(node, "parent") and getattr(node, "parent") is not None:
+            parent_path_id = getattr(node.parent, "path_id", 0)
+
+        snap = NodeSnapshot(
+            tick_id=self.tick_id,
+            exec_index=node.exec_index,
+            path_id=node.path_id,
+            parent_path_id=parent_path_id,
+            node_type=node.node_type,
+            name=node.name,
+            state=state_str,
+            duration_ms=duration_ms,
+        )
+        self._records.append(snap)
+
+    def build(self) -> dict:
+        ordered = sorted(self._records, key=lambda s: s.exec_index)
+        by_path = {s.path_id: s for s in ordered}
+        return {
+            "tick_id": self.tick_id,
+            "nodes": ordered,
+            "by_path": by_path,
+        }
 
 # =============================================================
 #   Node State
@@ -297,8 +380,9 @@ class BehaviorTree:
     def __init__(self) -> None:
         self.root: Node = BT_ROOT
         self._executed_nodes_last_tick = []
-        # Snapshot used by BT debugger (Step 4)
-        self.last_snapshot: dict[int, dict] = {}
+        # Perfect Snapshot Mode storage
+        self.last_snapshot = None
+        self._snapshot_builder = SnapshotBuilder()
 
     def _build_snapshot(self) -> dict:
         """
@@ -355,16 +439,35 @@ class BehaviorTree:
         return snapshot
 
     def tick(self) -> NodeState:
-        Node.begin_new_tick()  # Start of tick: reset tracking
-        if self.root:
-            result = self.root.tick()
-            self._executed_nodes_last_tick = Node.get_executed_nodes_last_tick()
-            # Build snapshot for debugger
-            self.last_snapshot = self._build_snapshot()
-            return result
-        self._executed_nodes_last_tick = []
-        self.last_snapshot = {}
-        return NodeState.FAILURE
+        # Begin new tick (clear execution order + active path flags)
+        Node.begin_new_tick()
+
+        # Reset snapshot builder with current BT_TICK_ID
+        from BehaviorTree.BehaviorTree import BT_TICK_ID
+        self._snapshot_builder.reset(BT_TICK_ID)
+
+        if not self.root:
+            self._executed_nodes_last_tick = []
+            self.last_snapshot = None
+            return NodeState.FAILURE
+
+        # Execute root node
+        result = self.root.tick()
+
+        # Collect executed nodes
+        executed = Node.get_executed_nodes_last_tick()
+        self._executed_nodes_last_tick = executed
+
+        # Record snapshots
+        for n in executed:
+            enum_state = n.last_state
+            state_str = enum_state.name if enum_state is not None else "None"
+            self._snapshot_builder.record(n, state_str, n.last_duration_ms)
+
+        # Final immutable snapshot
+        self.last_snapshot = self._snapshot_builder.build()
+
+        return result
 
     def GetExecutedNodesLastTick(self):
         return self._executed_nodes_last_tick
