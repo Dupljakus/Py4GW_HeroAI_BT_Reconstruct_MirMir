@@ -325,7 +325,7 @@ def draw_window():
                 finished = True
         # Print Tree button for Py4GW console
         if PyImGui.button("Print Tree"):
-            # True ASCII tree printer for Py4GW console with Unicode line drawing
+            # Pure ASCII tree printer for Py4GW console (no Unicode)
             from Py4GWCoreLib import ConsoleLog, Console
             def get_ascii_tree_lines(node, prefix="", is_last=True):
                 if node is None:
@@ -338,24 +338,16 @@ def draw_window():
                     "SubtreeNode": "[T]",
                     "None": "[N]"
                 }
-                state_icons = {
-                    "NodeState.SUCCESS": "✔",
-                    "NodeState.FAILURE": "✖",
-                    "NodeState.RUNNING": "●",
-                    "None": "○"
-                }
                 node_type = getattr(node, 'node_type', 'None')
                 type_icon = type_icons.get(node_type, '[N]')
-                state_val = str(getattr(node, 'last_state', 'None'))
-                state_icon = state_icons.get(state_val, '○')
                 duration = getattr(node, 'last_duration_ms', 0.0)
-                connector = "└── " if is_last else "├── "
-                line = f"{prefix}{connector}{type_icon} {node.name} [{node_type}] {state_icon} ({duration:.2f}ms)"
+                connector = "\\-- " if is_last else "+-- "
+                line = f"{prefix}{connector}{type_icon} {node.name} [{node_type}] ({duration:.2f}ms)"
                 lines = [line]
                 children = getattr(node, 'children', [])
                 for i, child in enumerate(children):
                     is_child_last = (i == len(children) - 1)
-                    new_prefix = prefix + ("    " if is_last else "│   ")
+                    new_prefix = prefix + ("    " if is_last else "|   ")
                     lines.extend(get_ascii_tree_lines(child, new_prefix, is_child_last))
                 return lines
             for line in get_ascii_tree_lines(test_bt.root):
